@@ -34,7 +34,6 @@ The main idea is to add an extra layer of encryption before pushing files to the
 
 ### Technical questions
 - How to properly store user credentials (oauth token for example)?
-- Endgame, where would the user keep the secret?
 - How to be sure there is no data corruption?
 - Do we need to specifically make an effort to ensure data integrity? Do we trust cloud providers? Like they may inject stuff in files.
 
@@ -46,7 +45,15 @@ The main idea is to add an extra layer of encryption before pushing files to the
 
 ## POC2
 - Barebone desktop app to do all actions from previous POC from an interface
+- Work on parallelization, should be easy with actors
 
 ## POC3
-- Reuse akka actors from desktop app to create a web service responsible of fetching/pushing/encryption/decryption
+- Reuse akka actors from desktop app to create a web service responsible for fetching/pushing/encryption/decryption
 - Build an API to control the webservice
+- Work on parallelization, should be easy with actors
+
+## MVP
+- Fully tested and functional desktop app
+
+## Promotion
+...
