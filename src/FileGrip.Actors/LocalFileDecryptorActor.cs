@@ -5,12 +5,12 @@ using System.Security.Cryptography;
 
 namespace FileGrip.Actors
 {
-    public class LocalFileEncryptorActor : ReceiveActor
+    public class LocalFileDecryptorActor : ReceiveActor
     {
         private readonly string _authorizedWorkingDirectory;
         private readonly string _outputDirectory;
 
-        public LocalFileEncryptorActor(string authorizedWorkingDirectory, string outputDirectory)
+        public LocalFileDecryptorActor(string authorizedWorkingDirectory, string outputDirectory)
         {
             if (authorizedWorkingDirectory is null)
             {
@@ -28,33 +28,32 @@ namespace FileGrip.Actors
                 throw new ArgumentException($"{nameof(outputDirectory)} should point to an existing directory.");
             }
 
-            Receive<Encrypt>(Handle);
+            Receive<Decrypt>(Handle);
 
-            Log($"{nameof(LocalFileEncryptorActor)} started!");
+            Log($"{nameof(LocalFileDecryptorActor)} started!");
         }
 
-        private void Handle(Encrypt request)
+        private void Handle(Decrypt request)
         {
             Log($"Message received for file {request.RelativeFilePath}.");
 
             request.RelativeFilePath.ValidateFilePath(_authorizedWorkingDirectory)
-                .Match(
-                    absoluteFilePath => EncryptFile(absoluteFilePath, request.RelativeFilePath, request.Key),
-                    error => Sender.Tell(error));
+                .Match(filePath => DecryptFile(filePath, request.Key, request.IV), error => Sender.Tell(error));
         }
 
-        private void EncryptFile(string absoluteFilePath, string relativeFilePath, byte[] key)
+        private void DecryptFile(string filePath, byte[] key, byte[] iv)
         {
             using var aes = Aes.Create();
             aes.Key = key;
+            aes.IV = iv;
 
-            var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
+            var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
 
-            using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(absoluteFilePath))))
+            using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(filePath))))
             {
-                using var cryptoStream = new CryptoStream(outputFileStream, encryptor, CryptoStreamMode.Write);
+                using var cryptoStream = new CryptoStream(outputFileStream, decryptor, CryptoStreamMode.Write);
                 using var streamWriter = new BinaryWriter(cryptoStream);
-                using (var inputFileStream = File.Open(absoluteFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+                using (var inputFileStream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.None))
                 {
                     var fileLength = inputFileStream.Length;
                     var buffer = new byte[1024];
@@ -70,36 +69,28 @@ namespace FileGrip.Actors
                 }
             }
 
-            Log($"Done encrypting {absoluteFilePath}.");
+            Sender.Tell(new Success());
 
-            Sender.Tell(new Success(relativeFilePath, aes.IV));
+            Log($"Done decrypting {filePath}.");
         }
 
-        private static void Log(string message) => Console.WriteLine($"[{nameof(LocalFileEncryptorActor)}] {message}");
+        private static void Log(string message) => Console.WriteLine($"[{nameof(LocalFileDecryptorActor)}] {message}");
 
-        public class Encrypt
+        public class Decrypt
         {
-            public Encrypt(string filePath, byte[] key)
+            public Decrypt(string filePath, byte[] key, byte[] iv)
             {
                 RelativeFilePath = filePath;
                 Key = key;
+                IV = iv;
             }
 
             public string RelativeFilePath { get; }
 
             public byte[] Key { get; }
-        }
-
-        public class Success
-        {
-            public Success(string filePath, byte[] iV)
-            {
-                FilePath = filePath;
-                IV = iV;
-            }
-
-            public string FilePath { get; }
             public byte[] IV { get; }
         }
+
+        public class Success { }
     }
 }
