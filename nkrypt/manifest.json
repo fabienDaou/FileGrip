@@ -1,0 +1,21 @@
+{
+    "name": "NKrypT",
+    "version": "1.0",
+    "description": "GDocs in-app encipherment/decipherment",
+    "manifest_version": 3,
+    "action": {},
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [{
+        "run_at": "document_end",
+        "matches": ["https://docs.google.com/document/d/*"],
+        "js": ["injected.js"]
+    }],
+    "web_accessible_resources": [
+        { 
+            "resources": ["popup.html"],
+            "matches": ["https://docs.google.com/document/d/*"]
+        }
+    ]
+}
