@@ -1,5 +1,6 @@
 ﻿using Akka.Actor;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 
@@ -50,6 +51,9 @@ namespace FileGrip.Actors
 
             var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
 
+            var stopWatch = new Stopwatch();
+            stopWatch.Start();
+
             using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(absoluteFilePath))))
             {
                 using var cryptoStream = new CryptoStream(outputFileStream, encryptor, CryptoStreamMode.Write);
@@ -70,7 +74,9 @@ namespace FileGrip.Actors
                 }
             }
 
-            Log($"Done encrypting {absoluteFilePath}.");
+            stopWatch.Stop();
+
+            Log($"Done encrypting {absoluteFilePath} in {stopWatch.Elapsed.TotalSeconds} seconds.");
 
             Sender.Tell(new Success(relativeFilePath, aes.IV));
         }

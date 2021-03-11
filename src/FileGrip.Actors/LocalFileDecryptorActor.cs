@@ -1,5 +1,6 @@
 ﻿using Akka.Actor;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 
@@ -49,6 +50,9 @@ namespace FileGrip.Actors
 
             var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
 
+            var stopWatch = new Stopwatch();
+            stopWatch.Start();
+
             using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(filePath))))
             {
                 using var cryptoStream = new CryptoStream(outputFileStream, decryptor, CryptoStreamMode.Write);
@@ -69,9 +73,11 @@ namespace FileGrip.Actors
                 }
             }
 
-            Sender.Tell(new Success());
+            stopWatch.Stop();
 
-            Log($"Done decrypting {filePath}.");
+            Log($"Done decrypting {filePath} in {stopWatch.Elapsed.TotalSeconds} seconds.");
+
+            Sender.Tell(new Success());
         }
 
         private static void Log(string message) => Console.WriteLine($"[{nameof(LocalFileDecryptorActor)}] {message}");
