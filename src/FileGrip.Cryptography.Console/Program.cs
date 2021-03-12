@@ -70,6 +70,9 @@ namespace FileGrip.Cryptography.Console
         private void Busy()
         {
             Receive<LocalFileEncryptorActor.Success>(Handle);
+            Receive<LocalFileDecryptorActor.Success>(Handle);
+            Receive<LocalFileEncryptorActor.Failure>(Handle);
+            Receive<LocalFileDecryptorActor.Failure>(Handle);
             Receive<FileDoesNotExist>(Handle);
             Receive<OutsideOfWorkingDirectory>(Handle);
         }
@@ -79,6 +82,12 @@ namespace FileGrip.Cryptography.Console
             Log($"File successfully encrypted: {success.FilePath}");
             _decryptRouterActor.Tell(new LocalFileDecryptorActor.Decrypt(success.FilePath, _key, success.IV));
         }
+
+        private void Handle(LocalFileDecryptorActor.Success success) => Log($"File successfully decrypted: {success.FilePath}");
+
+        private void Handle(LocalFileDecryptorActor.Failure failure) => Log($"Failed to decrypt file: {failure.FilePath}");
+
+        private void Handle(LocalFileEncryptorActor.Failure failure) => Log($"Failed to decrypte file: {failure.FilePath}");
 
         private void Handle(FileDoesNotExist fileDoesNotExist) => Log($"File does not exist: {fileDoesNotExist.FilePath}");
 

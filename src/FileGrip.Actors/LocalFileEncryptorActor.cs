@@ -3,13 +3,18 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading.Tasks;
 
 namespace FileGrip.Actors
 {
-    public class LocalFileEncryptorActor : ReceiveActor
+    public class LocalFileEncryptorActor : ReceiveActor, IWithUnboundedStash
     {
         private readonly string _authorizedWorkingDirectory;
         private readonly string _outputDirectory;
+
+        private IActorRef _sender;
+
+        public IStash Stash { get; set; }
 
         public LocalFileEncryptorActor(string authorizedWorkingDirectory, string outputDirectory)
         {
@@ -29,56 +34,93 @@ namespace FileGrip.Actors
                 throw new ArgumentException($"{nameof(outputDirectory)} should point to an existing directory.");
             }
 
-            Receive<Encrypt>(Handle);
+            Become(Ready);
 
             Log($"{nameof(LocalFileEncryptorActor)} started!");
+        }
+
+        private void Ready()
+        {
+            Receive<Encrypt>(Handle);
+        }
+
+        private void Busy()
+        {
+            Receive<Success>(Handle);
+            Receive<Failure>(Handle);
+            Receive<Encrypt>(AddToStash);
+        }
+
+        private void AddToStash(Encrypt encrypt) => Stash.Stash();
+
+        private void Handle(Success success)
+        {
+            Become(Ready);
+            Stash.Unstash();
+            _sender.Tell(success);
+        }
+
+        private void Handle(Failure failure)
+        {
+            Become(Ready);
+            Stash.Unstash();
+            _sender.Tell(failure);
         }
 
         private void Handle(Encrypt request)
         {
             Log($"Message received for file {request.RelativeFilePath}.");
 
+            _sender = Sender;
+
             request.RelativeFilePath.ValidateFilePath(_authorizedWorkingDirectory)
                 .Match(
-                    absoluteFilePath => EncryptFile(absoluteFilePath, request.RelativeFilePath, request.Key),
+                    absoluteFilePath => EncryptFile(absoluteFilePath, request.RelativeFilePath, request.Key)
+                        .PipeTo(Self, failure: ex => new Failure(request.RelativeFilePath)),
                     error => Sender.Tell(error));
+
+            Become(Busy);
         }
 
-        private void EncryptFile(string absoluteFilePath, string relativeFilePath, byte[] key)
+        private Task EncryptFile(string absoluteFilePath, string relativeFilePath, byte[] key)
         {
-            using var aes = Aes.Create();
-            aes.Key = key;
-
-            var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
-
-            var stopWatch = new Stopwatch();
-            stopWatch.Start();
-
-            using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(absoluteFilePath))))
+            var self = Self;
+            return Task.Run(() =>
             {
-                using var cryptoStream = new CryptoStream(outputFileStream, encryptor, CryptoStreamMode.Write);
-                using var streamWriter = new BinaryWriter(cryptoStream);
-                using (var inputFileStream = File.Open(absoluteFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+                using var aes = Aes.Create();
+                aes.Key = key;
+
+                var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
+
+                var stopWatch = new Stopwatch();
+                stopWatch.Start();
+
+                using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(absoluteFilePath))))
                 {
-                    var fileLength = inputFileStream.Length;
-                    var buffer = new byte[1024];
-                    while (true)
+                    using var cryptoStream = new CryptoStream(outputFileStream, encryptor, CryptoStreamMode.Write);
+                    using var streamWriter = new BinaryWriter(cryptoStream);
+                    using (var inputFileStream = File.Open(absoluteFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
                     {
-                        var lengthRead = inputFileStream.Read(buffer, 0, buffer.Length);
-                        if (lengthRead == 0)
+                        var fileLength = inputFileStream.Length;
+                        var buffer = new byte[1024];
+                        while (true)
                         {
-                            break;
+                            var lengthRead = inputFileStream.Read(buffer, 0, buffer.Length);
+                            if (lengthRead == 0)
+                            {
+                                break;
+                            }
+                            streamWriter.Write(buffer.AsSpan(0, lengthRead));
                         }
-                        streamWriter.Write(buffer.AsSpan(0, lengthRead));
                     }
                 }
-            }
 
-            stopWatch.Stop();
+                stopWatch.Stop();
 
-            Log($"Done encrypting {absoluteFilePath} in {stopWatch.Elapsed.TotalSeconds} seconds.");
+                Log($"Done encrypting {absoluteFilePath} in {stopWatch.Elapsed.TotalSeconds} seconds.");
 
-            Sender.Tell(new Success(relativeFilePath, aes.IV));
+                self.Tell(new Success(relativeFilePath, aes.IV));
+            });
         }
 
         private static void Log(string message) => Console.WriteLine($"[{nameof(LocalFileEncryptorActor)}] {message}");
@@ -106,6 +148,16 @@ namespace FileGrip.Actors
 
             public string FilePath { get; }
             public byte[] IV { get; }
+        }
+
+        public class Failure
+        {
+            public Failure(string filePath)
+            {
+                FilePath = filePath;
+            }
+
+            public string FilePath { get; }
         }
     }
 }

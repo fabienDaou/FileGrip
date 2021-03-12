@@ -3,13 +3,18 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading.Tasks;
 
 namespace FileGrip.Actors
 {
-    public class LocalFileDecryptorActor : ReceiveActor
+    public class LocalFileDecryptorActor : ReceiveActor, IWithUnboundedStash
     {
         private readonly string _authorizedWorkingDirectory;
         private readonly string _outputDirectory;
+
+        private IActorRef _sender;
+
+        public IStash Stash { get; set; }
 
         public LocalFileDecryptorActor(string authorizedWorkingDirectory, string outputDirectory)
         {
@@ -29,55 +34,94 @@ namespace FileGrip.Actors
                 throw new ArgumentException($"{nameof(outputDirectory)} should point to an existing directory.");
             }
 
-            Receive<Decrypt>(Handle);
+            Become(Ready);
 
             Log($"{nameof(LocalFileDecryptorActor)} started!");
+        }
+
+        private void Ready()
+        {
+            Receive<Decrypt>(Handle);
+        }
+
+        private void Busy()
+        {
+            Receive<Success>(Handle);
+            Receive<Failure>(Handle);
+            Receive<Decrypt>(AddToStash);
+        }
+
+        private void AddToStash(Decrypt decrypt) => Stash.Stash();
+
+        private void Handle(Success success)
+        {
+            Become(Ready);
+            Stash.Unstash();
+            _sender.Tell(success);
+        }
+
+        private void Handle(Failure failure)
+        {
+            Become(Ready);
+            Stash.Unstash();
+            _sender.Tell(failure);
         }
 
         private void Handle(Decrypt request)
         {
             Log($"Message received for file {request.RelativeFilePath}.");
 
+            _sender = Sender;
+
             request.RelativeFilePath.ValidateFilePath(_authorizedWorkingDirectory)
-                .Match(filePath => DecryptFile(filePath, request.Key, request.IV), error => Sender.Tell(error));
+                .Match(
+                    filePath => DecryptFile(filePath, request.RelativeFilePath, request.Key, request.IV)
+                        .PipeTo(Self, failure: ex => new Failure(request.RelativeFilePath)),
+                    error => Sender.Tell(error));
+
+            Become(Busy);
         }
 
-        private void DecryptFile(string filePath, byte[] key, byte[] iv)
+        private Task DecryptFile(string filePath, string relativeFilePath, byte[] key, byte[] iv)
         {
-            using var aes = Aes.Create();
-            aes.Key = key;
-            aes.IV = iv;
-
-            var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
-
-            var stopWatch = new Stopwatch();
-            stopWatch.Start();
-
-            using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(filePath))))
+            var self = Self;
+            return Task.Run(() =>
             {
-                using var cryptoStream = new CryptoStream(outputFileStream, decryptor, CryptoStreamMode.Write);
-                using var streamWriter = new BinaryWriter(cryptoStream);
-                using (var inputFileStream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.None))
+                using var aes = Aes.Create();
+                aes.Key = key;
+                aes.IV = iv;
+
+                var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
+
+                var stopWatch = new Stopwatch();
+                stopWatch.Start();
+
+                using (var outputFileStream = File.Create(Path.Combine(_outputDirectory, Path.GetFileName(filePath))))
                 {
-                    var fileLength = inputFileStream.Length;
-                    var buffer = new byte[1024];
-                    while (true)
+                    using var cryptoStream = new CryptoStream(outputFileStream, decryptor, CryptoStreamMode.Write);
+                    using var streamWriter = new BinaryWriter(cryptoStream);
+                    using (var inputFileStream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.None))
                     {
-                        var lengthRead = inputFileStream.Read(buffer, 0, buffer.Length);
-                        if (lengthRead == 0)
+                        var fileLength = inputFileStream.Length;
+                        var buffer = new byte[1024];
+                        while (true)
                         {
-                            break;
+                            var lengthRead = inputFileStream.Read(buffer, 0, buffer.Length);
+                            if (lengthRead == 0)
+                            {
+                                break;
+                            }
+                            streamWriter.Write(buffer.AsSpan(0, lengthRead));
                         }
-                        streamWriter.Write(buffer.AsSpan(0, lengthRead));
                     }
                 }
-            }
 
-            stopWatch.Stop();
+                stopWatch.Stop();
 
-            Log($"Done decrypting {filePath} in {stopWatch.Elapsed.TotalSeconds} seconds.");
+                Log($"Done decrypting {filePath} in {stopWatch.Elapsed.TotalSeconds} seconds.");
 
-            Sender.Tell(new Success());
+                self.Tell(new Success(relativeFilePath));
+            });
         }
 
         private static void Log(string message) => Console.WriteLine($"[{nameof(LocalFileDecryptorActor)}] {message}");
@@ -97,6 +141,24 @@ namespace FileGrip.Actors
             public byte[] IV { get; }
         }
 
-        public class Success { }
+        public class Success 
+        {
+            public Success(string filePath)
+            {
+                FilePath = filePath;
+            }
+
+            public string FilePath { get; }
+        }
+
+        public class Failure 
+        {
+            public Failure(string filePath)
+            {
+                FilePath = filePath;
+            }
+
+            public string FilePath { get; }
+        }
     }
 }
